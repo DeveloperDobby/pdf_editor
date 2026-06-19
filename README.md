@@ -19,26 +19,6 @@ https://developerdobby.github.io/pdf_editor/
 8. 분할된 파일들을 ZIP으로 압축하여 다운로드
 9. 선택 도구는 페이지/슬라이드 목록 영역에서 그리드/목록 버튼 왼쪽에 배치
 
-## 파일 구조
-
-```text
-.
-├── index.html
-├── styles.css
-├── app.js
-├── .nojekyll
-└── README.md
-```
-
-## GitHub Pages 배포 방법
-
-1. 새 GitHub 저장소를 만듭니다.
-2. 이 폴더의 파일을 저장소 루트에 업로드합니다.
-3. 저장소의 `Settings` → `Pages`로 이동합니다.
-4. `Build and deployment`에서 `Deploy from a branch`를 선택합니다.
-5. Branch를 `main`, Folder를 `/root`로 선택하고 저장합니다.
-6. 표시되는 GitHub Pages 주소로 접속합니다.
-
 ## 사용 라이브러리
 
 - PDF 미리보기 렌더링: PDF.js
