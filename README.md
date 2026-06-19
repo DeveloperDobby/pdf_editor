@@ -2,6 +2,9 @@
 
 GitHub Pages에서 바로 배포할 수 있는 정적 문서 편집 웹앱입니다. 서버 없이 브라우저에서만 PDF와 PPTX를 처리합니다.
 
+## 바로가기
+https://developerdobby.github.io/pdf_editor/
+
 ## 구현 기능
 
 1. PDF 불러오기 후 페이지를 그리드/목록 형식으로 표시
