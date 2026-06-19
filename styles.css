@@ -190,11 +190,23 @@ h3 {
   align-items: center;
 }
 
+.pages-toolbar,
+.selection-toolbar,
 .view-toggle,
 .button-row {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+.pages-toolbar {
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.selection-toolbar {
+  padding-right: 0.5rem;
+  border-right: 1px solid var(--line);
 }
 
 .view-toggle {
@@ -208,6 +220,16 @@ h3 {
 .chip.active {
   color: #fff;
   background: var(--text);
+}
+
+.chip.danger {
+  color: #fff;
+  background: var(--danger);
+  font-weight: 800;
+}
+
+.chip.danger:hover:not(:disabled) {
+  background: var(--danger-dark);
 }
 
 .actions-grid {
@@ -445,6 +467,15 @@ h3 {
   .pages-heading {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .pages-toolbar {
+    justify-content: flex-start;
+  }
+
+  .selection-toolbar {
+    padding-right: 0;
+    border-right: 0;
   }
 
   .view-toggle {

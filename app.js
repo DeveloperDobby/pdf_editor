@@ -12,6 +12,7 @@ const state = {
   items: [],
   selectedItems: new Set(),
   viewMode: 'grid',
+  isBusy: false,
 };
 
 const el = {
@@ -26,7 +27,8 @@ const el = {
   selectAllBtn: document.querySelector('#selectAllBtn'),
   clearSelectionBtn: document.querySelector('#clearSelectionBtn'),
   invertSelectionBtn: document.querySelector('#invertSelectionBtn'),
-  downloadDeletedBtn: document.querySelector('#downloadDeletedBtn'),
+  downloadEditedBtn: document.querySelector('#downloadEditedBtn'),
+  deleteSelectedBtn: document.querySelector('#deleteSelectedBtn'),
   splitSizeInput: document.querySelector('#splitSizeInput'),
   splitDownloadBtn: document.querySelector('#splitDownloadBtn'),
   status: document.querySelector('#status'),
@@ -40,7 +42,8 @@ el.listViewBtn.addEventListener('click', () => setViewMode('list'));
 el.selectAllBtn.addEventListener('click', selectAllItems);
 el.clearSelectionBtn.addEventListener('click', clearSelection);
 el.invertSelectionBtn.addEventListener('click', invertSelection);
-el.downloadDeletedBtn.addEventListener('click', downloadEditedFile);
+el.downloadEditedBtn.addEventListener('click', downloadEditedFile);
+el.deleteSelectedBtn.addEventListener('click', deleteSelectedItems);
 el.splitDownloadBtn.addEventListener('click', downloadSplitZip);
 
 async function handleFileChange(event) {
@@ -130,6 +133,7 @@ function resetState(clearInput = true) {
   state.pptxModel = null;
   state.originalItemCount = 0;
   state.items = [];
+  state.isBusy = false;
   state.selectedItems.clear();
   el.pagesContainer.innerHTML = '';
   el.fileInfo.textContent = '아직 선택된 파일이 없습니다.';
@@ -145,7 +149,8 @@ function enableControls(enabled) {
     el.selectAllBtn,
     el.clearSelectionBtn,
     el.invertSelectionBtn,
-    el.downloadDeletedBtn,
+    el.downloadEditedBtn,
+    el.deleteSelectedBtn,
     el.splitSizeInput,
     el.splitDownloadBtn,
   ];
@@ -213,7 +218,7 @@ function createItemCard(item, visibleNumber) {
   checkbox.dataset.itemId = String(item.originalIndex);
   checkbox.checked = state.selectedItems.has(item.originalIndex);
   checkbox.addEventListener('change', handleItemSelection);
-  checkLabel.append(checkbox, '삭제');
+  checkLabel.append(checkbox, '선택');
 
   const trashButton = document.createElement('button');
   trashButton.className = 'trash-button';
@@ -310,6 +315,28 @@ function selectAllItems() {
   syncAllCheckboxes();
 }
 
+function deleteSelectedItems() {
+  if (!state.items.length) return;
+
+  const selectedExistingItems = state.items.filter((item) => state.selectedItems.has(item.originalIndex));
+  if (!selectedExistingItems.length) {
+    showStatus(`삭제할 ${unitName()}을 먼저 선택하세요.`, true);
+    return;
+  }
+
+  if (selectedExistingItems.length >= state.items.length) {
+    showStatus(`모든 ${unitName()}을 삭제할 수는 없습니다. 최소 1개는 남겨야 합니다.`, true);
+    return;
+  }
+
+  const removedCount = selectedExistingItems.length;
+  state.items = state.items.filter((item) => !state.selectedItems.has(item.originalIndex));
+  state.selectedItems.clear();
+  renderPageList();
+  updateAfterItemsChanged();
+  showStatus(`선택한 ${removedCount.toLocaleString()}개 ${unitName()}을 목록에서 삭제했습니다. 다운로드하면 이 상태가 반영됩니다.`);
+}
+
 function clearSelection() {
   state.selectedItems.clear();
   syncAllCheckboxes();
@@ -342,18 +369,28 @@ function updateAfterItemsChanged() {
   el.splitSizeInput.value = String(Math.min(Number.parseInt(el.splitSizeInput.value, 10) || 10, Math.max(1, currentCount)));
   enableControls(Boolean(currentCount));
   updateSelectionInfo();
+  updateSelectionActionState();
 }
 
 function updateSelectionInfo() {
   if (!state.items.length) {
     el.selectionInfo.textContent = '파일을 불러오면 페이지 또는 슬라이드가 여기에 표시됩니다.';
+    updateSelectionActionState();
     return;
   }
 
-  const selectedCount = state.selectedItems.size;
-  const remainingCount = state.items.length - selectedCount;
+  const selectedCount = state.items.filter((item) => state.selectedItems.has(item.originalIndex)).length;
   const unit = unitName();
-  el.selectionInfo.textContent = `현재 ${state.items.length.toLocaleString()}${unit} 중 삭제 선택 ${selectedCount.toLocaleString()}${unit} · 남을 ${unit} ${remainingCount.toLocaleString()}개`;
+  el.selectionInfo.textContent = `현재 목록 ${state.items.length.toLocaleString()}${unit} · 선택 ${selectedCount.toLocaleString()}${unit} · 다운로드는 현재 목록 그대로 저장됩니다.`;
+  updateSelectionActionState();
+}
+
+function updateSelectionActionState() {
+  const hasItems = Boolean(state.items.length);
+  const selectedCount = state.items.filter((item) => state.selectedItems.has(item.originalIndex)).length;
+  if (el.deleteSelectedBtn) {
+    el.deleteSelectedBtn.disabled = state.isBusy || !hasItems || selectedCount === 0;
+  }
 }
 
 function setViewMode(mode) {
@@ -371,27 +408,16 @@ function setViewMode(mode) {
 async function downloadEditedFile() {
   if (!state.arrayBuffer || !state.items.length) return;
 
-  const keepItems = state.items.filter((item) => !state.selectedItems.has(item.originalIndex));
-  const hasInstantDeletion = state.originalItemCount > state.items.length;
-  if (state.selectedItems.size === 0 && !hasInstantDeletion) {
-    showStatus(`삭제할 ${unitName()}을 먼저 선택하거나 각 항목의 휴지통 버튼으로 바로 삭제하세요.`, true);
-    return;
-  }
-  if (keepItems.length === 0) {
-    showStatus(`모든 ${unitName()}을 삭제할 수는 없습니다. 최소 1개는 남겨야 합니다.`, true);
-    return;
-  }
+  const keepItems = [...state.items];
 
-  setBusy(true, `선택한 ${unitName()}을 제외한 새 ${kindLabel()}를 만드는 중입니다...`);
+  setBusy(true, `현재 목록 기준으로 새 ${kindLabel()}를 만드는 중입니다...`);
   try {
     if (state.fileKind === 'pdf') {
       await downloadEditedPdf(keepItems);
     } else {
       await downloadEditedPptx(keepItems);
     }
-    state.selectedItems.clear();
-    syncAllCheckboxes();
-    showStatus(`새 ${kindLabel()} 다운로드가 시작되었습니다.`);
+    showStatus(`현재 목록 기준 새 ${kindLabel()} 다운로드가 시작되었습니다.`);
   } catch (error) {
     console.error(error);
     showStatus(`새 ${kindLabel()}를 만드는 중 오류가 발생했습니다.`, true);
@@ -674,7 +700,9 @@ function setFileIcon(fileKind) {
 }
 
 function setBusy(isBusy, message = '') {
+  state.isBusy = isBusy;
   enableControls(!isBusy && Boolean(state.items.length));
+  updateSelectionActionState();
   el.fileInput.disabled = isBusy;
   if (message) showStatus(message);
 }

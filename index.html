@@ -34,21 +34,16 @@
     <section class="panel tools-panel" aria-labelledby="tools-title">
       <div class="panel-heading">
         <div>
-          <h2 id="tools-title">2. 작업 선택</h2>
-          <p>삭제할 페이지/슬라이드를 체크하거나, 분할 기준 개수를 입력하세요.</p>
+          <h2 id="tools-title">2. 다운로드 작업</h2>
+          <p>페이지/슬라이드 목록에서 편집한 현재 상태를 파일로 저장하거나, 개수 기준으로 나누어 ZIP으로 다운로드하세요.</p>
         </div>
       </div>
 
       <div class="actions-grid">
         <article class="action-card">
-          <h3>선택 항목 삭제 후 새 파일 다운로드</h3>
-          <p>아래 목록에서 삭제할 항목을 체크한 뒤 실행하세요. 각 항목의 휴지통 버튼으로 즉시 목록에서 제거할 수도 있습니다.</p>
-          <div class="button-row">
-            <button id="selectAllBtn" type="button" disabled>전체 선택</button>
-            <button id="clearSelectionBtn" type="button" disabled>선택 해제</button>
-            <button id="invertSelectionBtn" type="button" disabled>선택 반전</button>
-          </div>
-          <button id="downloadDeletedBtn" class="primary" type="button" disabled>선택 항목 삭제 파일 다운로드</button>
+          <h3>편집된 파일 다운로드</h3>
+          <p>목록에서 휴지통 버튼 또는 선택 페이지 삭제로 제거한 뒤, 현재 남아 있는 페이지/슬라이드 그대로 새 파일을 만듭니다.</p>
+          <button id="downloadEditedBtn" class="primary" type="button" disabled>편집된 파일 다운로드</button>
         </article>
 
         <article class="action-card">
@@ -69,9 +64,17 @@
           <h2 id="pages-title">3. 페이지 목록</h2>
           <p id="selectionInfo">파일을 불러오면 페이지 또는 슬라이드가 여기에 표시됩니다.</p>
         </div>
-        <div class="view-toggle" aria-label="페이지 목록 보기 방식 선택">
-          <button id="gridViewBtn" class="chip active" type="button">그리드</button>
-          <button id="listViewBtn" class="chip" type="button">목록</button>
+        <div class="pages-toolbar">
+          <div class="selection-toolbar" aria-label="페이지 선택 도구">
+            <button id="selectAllBtn" class="chip" type="button" disabled>전체 선택</button>
+            <button id="clearSelectionBtn" class="chip" type="button" disabled>선택 해제</button>
+            <button id="invertSelectionBtn" class="chip" type="button" disabled>선택 반전</button>
+            <button id="deleteSelectedBtn" class="chip danger" type="button" disabled>선택 페이지 삭제</button>
+          </div>
+          <div class="view-toggle" aria-label="페이지 목록 보기 방식 선택">
+            <button id="gridViewBtn" class="chip active" type="button">그리드</button>
+            <button id="listViewBtn" class="chip" type="button">목록</button>
+          </div>
         </div>
       </div>
       <div id="pagesContainer" class="pages-grid" aria-live="polite"></div>
