@@ -1,17 +1,24 @@
 const PDFJS_VERSION = '3.11.174';
+const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 
 const state = {
   file: null,
+  fileKind: null,
   arrayBuffer: null,
   pdfJsDoc: null,
-  pageCount: 0,
-  selectedPages: new Set(),
+  pptxModel: null,
+  originalItemCount: 0,
+  items: [],
+  selectedItems: new Set(),
   viewMode: 'grid',
 };
 
 const el = {
-  pdfInput: document.querySelector('#pdfInput'),
+  fileInput: document.querySelector('#fileInput'),
+  fileDropIcon: document.querySelector('#fileDropIcon'),
   fileInfo: document.querySelector('#fileInfo'),
+  pagesTitle: document.querySelector('#pages-title'),
   pagesContainer: document.querySelector('#pagesContainer'),
   selectionInfo: document.querySelector('#selectionInfo'),
   gridViewBtn: document.querySelector('#gridViewBtn'),
@@ -27,61 +34,110 @@ const el = {
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.js`;
 
-el.pdfInput.addEventListener('change', handleFileChange);
+el.fileInput.addEventListener('change', handleFileChange);
 el.gridViewBtn.addEventListener('click', () => setViewMode('grid'));
 el.listViewBtn.addEventListener('click', () => setViewMode('list'));
-el.selectAllBtn.addEventListener('click', selectAllPages);
+el.selectAllBtn.addEventListener('click', selectAllItems);
 el.clearSelectionBtn.addEventListener('click', clearSelection);
 el.invertSelectionBtn.addEventListener('click', invertSelection);
-el.downloadDeletedBtn.addEventListener('click', downloadPdfWithoutSelectedPages);
+el.downloadDeletedBtn.addEventListener('click', downloadEditedFile);
 el.splitDownloadBtn.addEventListener('click', downloadSplitZip);
 
 async function handleFileChange(event) {
   const file = event.target.files?.[0];
   if (!file) return;
 
-  if (file.type && file.type !== 'application/pdf') {
-    showStatus('PDF 파일만 선택할 수 있습니다.', true);
+  const fileKind = detectFileKind(file);
+  if (fileKind === 'ppt') {
+    showStatus('구형 .ppt 파일은 브라우저 단독 편집을 지원하지 않습니다. PowerPoint에서 .pptx로 저장한 뒤 다시 선택하세요.', true);
+    resetState();
+    return;
+  }
+  if (!fileKind) {
+    showStatus('PDF 또는 PPTX 파일만 선택할 수 있습니다.', true);
     resetState();
     return;
   }
 
   resetState(false);
   state.file = file;
-  setBusy(true, 'PDF를 읽는 중입니다...');
+  state.fileKind = fileKind;
+  setFileIcon(fileKind);
+  setBusy(true, `${kindLabel()}를 읽는 중입니다...`);
 
   try {
     state.arrayBuffer = await file.arrayBuffer();
-    state.pdfJsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(state.arrayBuffer.slice(0)) }).promise;
-    state.pageCount = state.pdfJsDoc.numPages;
 
-    el.fileInfo.textContent = `${file.name} · 총 ${state.pageCount.toLocaleString()}페이지 · ${formatBytes(file.size)}`;
-    el.splitSizeInput.max = String(state.pageCount);
-    el.splitSizeInput.value = String(Math.min(10, state.pageCount));
+    if (fileKind === 'pdf') {
+      await loadPdf(file);
+    } else {
+      await loadPptx(file);
+    }
+
     enableControls(true);
-    updateSelectionInfo();
+    updateAfterItemsChanged();
     await renderPageList();
-    showStatus('PDF 불러오기가 완료되었습니다.');
+    showStatus(`${kindLabel()} 불러오기가 완료되었습니다.`);
   } catch (error) {
     console.error(error);
-    showStatus('PDF를 불러오지 못했습니다. 암호화되었거나 손상된 파일일 수 있습니다.', true);
+    showStatus(`${kindLabel()}를 불러오지 못했습니다. 암호화되었거나 손상된 파일일 수 있습니다.`, true);
     resetState();
   } finally {
     setBusy(false);
   }
 }
 
+async function loadPdf(file) {
+  state.pdfJsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(state.arrayBuffer.slice(0)) }).promise;
+  const pageCount = state.pdfJsDoc.numPages;
+  state.originalItemCount = pageCount;
+  state.items = Array.from({ length: pageCount }, (_, index) => ({
+    originalIndex: index + 1,
+    label: `${index + 1}페이지`,
+    subLabel: 'PDF 페이지',
+  }));
+
+  el.pagesTitle.textContent = '3. 페이지 목록';
+  el.fileInfo.textContent = `${file.name} · 총 ${pageCount.toLocaleString()}페이지 · ${formatBytes(file.size)}`;
+}
+
+async function loadPptx(file) {
+  const zip = await JSZip.loadAsync(state.arrayBuffer.slice(0));
+  const model = await readPptxModel(zip);
+
+  if (!model.slides.length) {
+    throw new Error('PPTX 안에서 슬라이드를 찾지 못했습니다.');
+  }
+
+  state.pptxModel = model;
+  state.originalItemCount = model.slides.length;
+  state.items = model.slides.map((slide, index) => ({
+    ...slide,
+    originalIndex: index + 1,
+    label: `${index + 1}슬라이드`,
+    subLabel: 'PPTX 슬라이드',
+  }));
+
+  el.pagesTitle.textContent = '3. 슬라이드 목록';
+  el.fileInfo.textContent = `${file.name} · 총 ${model.slides.length.toLocaleString()}슬라이드 · ${formatBytes(file.size)}`;
+}
+
 function resetState(clearInput = true) {
   state.file = null;
+  state.fileKind = null;
   state.arrayBuffer = null;
   state.pdfJsDoc = null;
-  state.pageCount = 0;
-  state.selectedPages.clear();
+  state.pptxModel = null;
+  state.originalItemCount = 0;
+  state.items = [];
+  state.selectedItems.clear();
   el.pagesContainer.innerHTML = '';
-  el.fileInfo.textContent = '아직 선택된 PDF가 없습니다.';
-  el.selectionInfo.textContent = 'PDF를 불러오면 페이지가 여기에 표시됩니다.';
+  el.fileInfo.textContent = '아직 선택된 파일이 없습니다.';
+  el.selectionInfo.textContent = '파일을 불러오면 페이지 또는 슬라이드가 여기에 표시됩니다.';
+  el.pagesTitle.textContent = '3. 페이지 목록';
+  setFileIcon(null);
   enableControls(false);
-  if (clearInput) el.pdfInput.value = '';
+  if (clearInput) el.fileInput.value = '';
 }
 
 function enableControls(enabled) {
@@ -101,54 +157,103 @@ function enableControls(enabled) {
 async function renderPageList() {
   el.pagesContainer.innerHTML = '';
 
-  for (let pageNumber = 1; pageNumber <= state.pageCount; pageNumber += 1) {
-    const card = createPageCard(pageNumber);
+  state.items.forEach((item, visibleIndex) => {
+    const card = createItemCard(item, visibleIndex + 1);
     el.pagesContainer.appendChild(card);
-  }
+  });
 
-  for (let pageNumber = 1; pageNumber <= state.pageCount; pageNumber += 1) {
-    await renderThumbnail(pageNumber);
-    if (pageNumber % 4 === 0) {
+  if (state.fileKind !== 'pdf') return;
+
+  for (let visibleIndex = 0; visibleIndex < state.items.length; visibleIndex += 1) {
+    await renderThumbnail(state.items[visibleIndex]);
+    if ((visibleIndex + 1) % 4 === 0) {
       await new Promise((resolve) => requestAnimationFrame(resolve));
     }
   }
 }
 
-function createPageCard(pageNumber) {
+function createItemCard(item, visibleNumber) {
   const card = document.createElement('article');
-  card.className = 'page-card';
-  card.dataset.page = String(pageNumber);
+  card.className = `page-card ${state.fileKind === 'pptx' ? 'page-card--pptx' : ''}`;
+  card.dataset.itemId = String(item.originalIndex);
 
-  const canvasWrap = document.createElement('div');
-  canvasWrap.className = 'page-card__canvas-wrap';
+  if (state.fileKind === 'pdf') {
+    const canvasWrap = document.createElement('div');
+    canvasWrap.className = 'page-card__canvas-wrap';
 
-  const canvas = document.createElement('canvas');
-  canvas.id = `pageCanvas-${pageNumber}`;
-  canvas.setAttribute('aria-label', `${pageNumber}페이지 미리보기`);
-  canvasWrap.appendChild(canvas);
+    const canvas = document.createElement('canvas');
+    canvas.id = `pageCanvas-${item.originalIndex}`;
+    canvas.setAttribute('aria-label', `${item.label} 미리보기`);
+    canvasWrap.appendChild(canvas);
+    card.appendChild(canvasWrap);
+  } else {
+    card.appendChild(createPptxPreview(item));
+  }
 
   const footer = document.createElement('div');
   footer.className = 'page-card__footer';
 
-  const pageLabel = document.createElement('strong');
-  pageLabel.textContent = `${pageNumber}페이지`;
+  const meta = document.createElement('div');
+  meta.className = 'page-card__meta';
+
+  const itemLabel = document.createElement('strong');
+  itemLabel.textContent = item.label;
+
+  const itemSubLabel = document.createElement('small');
+  itemSubLabel.textContent = `현재 순서 ${visibleNumber.toLocaleString()} · ${item.subLabel}`;
+  meta.append(itemLabel, itemSubLabel);
+
+  const actions = document.createElement('div');
+  actions.className = 'page-card__actions';
 
   const checkLabel = document.createElement('label');
   checkLabel.className = 'delete-check';
   const checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
-  checkbox.dataset.page = String(pageNumber);
-  checkbox.addEventListener('change', handlePageSelection);
+  checkbox.dataset.itemId = String(item.originalIndex);
+  checkbox.checked = state.selectedItems.has(item.originalIndex);
+  checkbox.addEventListener('change', handleItemSelection);
   checkLabel.append(checkbox, '삭제');
 
-  footer.append(pageLabel, checkLabel);
-  card.append(canvasWrap, footer);
+  const trashButton = document.createElement('button');
+  trashButton.className = 'trash-button';
+  trashButton.type = 'button';
+  trashButton.dataset.itemId = String(item.originalIndex);
+  trashButton.setAttribute('aria-label', `${item.label} 바로 삭제`);
+  trashButton.title = '바로 삭제';
+  trashButton.textContent = '🗑';
+  trashButton.addEventListener('click', handleInstantDelete);
+
+  actions.append(checkLabel, trashButton);
+  footer.append(meta, actions);
+  card.appendChild(footer);
+  syncCardSelection(item.originalIndex, card);
   return card;
 }
 
-async function renderThumbnail(pageNumber) {
-  const page = await state.pdfJsDoc.getPage(pageNumber);
-  const canvas = document.querySelector(`#pageCanvas-${pageNumber}`);
+function createPptxPreview(item) {
+  const previewWrap = document.createElement('div');
+  previewWrap.className = 'page-card__preview';
+
+  const preview = document.createElement('div');
+  preview.className = 'slide-preview';
+
+  const badge = document.createElement('span');
+  badge.className = 'slide-preview__badge';
+  badge.textContent = 'PPTX';
+
+  const text = document.createElement('div');
+  text.className = 'slide-preview__text';
+  text.textContent = item.text || '이 슬라이드에서 추출 가능한 텍스트가 없습니다.';
+
+  preview.append(badge, text);
+  previewWrap.appendChild(preview);
+  return previewWrap;
+}
+
+async function renderThumbnail(item) {
+  const page = await state.pdfJsDoc.getPage(item.originalIndex);
+  const canvas = document.querySelector(`#pageCanvas-${item.originalIndex}`);
   if (!canvas) return;
 
   const baseViewport = page.getViewport({ scale: 1 });
@@ -167,61 +272,88 @@ async function renderThumbnail(pageNumber) {
   await page.render({ canvasContext: context, viewport }).promise;
 }
 
-function handlePageSelection(event) {
-  const pageNumber = Number(event.target.dataset.page);
+function handleItemSelection(event) {
+  const itemId = Number(event.target.dataset.itemId);
   if (event.target.checked) {
-    state.selectedPages.add(pageNumber);
+    state.selectedItems.add(itemId);
   } else {
-    state.selectedPages.delete(pageNumber);
+    state.selectedItems.delete(itemId);
   }
-  syncCardSelection(pageNumber);
+  syncCardSelection(itemId);
   updateSelectionInfo();
 }
 
-function syncCardSelection(pageNumber) {
-  const card = document.querySelector(`.page-card[data-page="${pageNumber}"]`);
-  if (card) card.classList.toggle('selected', state.selectedPages.has(pageNumber));
+function handleInstantDelete(event) {
+  const itemId = Number(event.currentTarget.dataset.itemId);
+  const item = state.items.find((candidate) => candidate.originalIndex === itemId);
+  if (!item) return;
+
+  if (state.items.length <= 1) {
+    showStatus(`마지막 ${unitName()}은 삭제할 수 없습니다. 최소 1개는 남겨야 합니다.`, true);
+    return;
+  }
+
+  state.items = state.items.filter((candidate) => candidate.originalIndex !== itemId);
+  state.selectedItems.delete(itemId);
+  renderPageList();
+  updateAfterItemsChanged();
+  showStatus(`${item.label}을 목록에서 삭제했습니다. 다운로드하면 이 상태가 반영됩니다.`);
 }
 
-function selectAllPages() {
-  for (let pageNumber = 1; pageNumber <= state.pageCount; pageNumber += 1) {
-    state.selectedPages.add(pageNumber);
-  }
+function syncCardSelection(itemId, givenCard = null) {
+  const card = givenCard || document.querySelector(`.page-card[data-item-id="${itemId}"]`);
+  if (card) card.classList.toggle('selected', state.selectedItems.has(itemId));
+}
+
+function selectAllItems() {
+  state.items.forEach((item) => state.selectedItems.add(item.originalIndex));
   syncAllCheckboxes();
 }
 
 function clearSelection() {
-  state.selectedPages.clear();
+  state.selectedItems.clear();
   syncAllCheckboxes();
 }
 
 function invertSelection() {
+  const currentItemIds = new Set(state.items.map((item) => item.originalIndex));
   const nextSelection = new Set();
-  for (let pageNumber = 1; pageNumber <= state.pageCount; pageNumber += 1) {
-    if (!state.selectedPages.has(pageNumber)) nextSelection.add(pageNumber);
-  }
-  state.selectedPages = nextSelection;
+
+  currentItemIds.forEach((itemId) => {
+    if (!state.selectedItems.has(itemId)) nextSelection.add(itemId);
+  });
+
+  state.selectedItems = nextSelection;
   syncAllCheckboxes();
 }
 
 function syncAllCheckboxes() {
   document.querySelectorAll('.delete-check input').forEach((checkbox) => {
-    const pageNumber = Number(checkbox.dataset.page);
-    checkbox.checked = state.selectedPages.has(pageNumber);
-    syncCardSelection(pageNumber);
+    const itemId = Number(checkbox.dataset.itemId);
+    checkbox.checked = state.selectedItems.has(itemId);
+    syncCardSelection(itemId);
   });
   updateSelectionInfo();
 }
 
+function updateAfterItemsChanged() {
+  const currentCount = state.items.length;
+  el.splitSizeInput.max = String(Math.max(1, currentCount));
+  el.splitSizeInput.value = String(Math.min(Number.parseInt(el.splitSizeInput.value, 10) || 10, Math.max(1, currentCount)));
+  enableControls(Boolean(currentCount));
+  updateSelectionInfo();
+}
+
 function updateSelectionInfo() {
-  if (!state.pageCount) {
-    el.selectionInfo.textContent = 'PDF를 불러오면 페이지가 여기에 표시됩니다.';
+  if (!state.items.length) {
+    el.selectionInfo.textContent = '파일을 불러오면 페이지 또는 슬라이드가 여기에 표시됩니다.';
     return;
   }
 
-  const selectedCount = state.selectedPages.size;
-  const remainingCount = state.pageCount - selectedCount;
-  el.selectionInfo.textContent = `총 ${state.pageCount.toLocaleString()}페이지 중 삭제 선택 ${selectedCount.toLocaleString()}페이지 · 남을 페이지 ${remainingCount.toLocaleString()}페이지`;
+  const selectedCount = state.selectedItems.size;
+  const remainingCount = state.items.length - selectedCount;
+  const unit = unitName();
+  el.selectionInfo.textContent = `현재 ${state.items.length.toLocaleString()}${unit} 중 삭제 선택 ${selectedCount.toLocaleString()}${unit} · 남을 ${unit} ${remainingCount.toLocaleString()}개`;
 }
 
 function setViewMode(mode) {
@@ -231,87 +363,79 @@ function setViewMode(mode) {
   el.gridViewBtn.classList.toggle('active', mode === 'grid');
   el.listViewBtn.classList.toggle('active', mode === 'list');
 
-  if (state.pdfJsDoc) {
-    for (let pageNumber = 1; pageNumber <= state.pageCount; pageNumber += 1) {
-      renderThumbnail(pageNumber);
-    }
+  if (state.fileKind === 'pdf' && state.pdfJsDoc) {
+    state.items.forEach((item) => renderThumbnail(item));
   }
 }
 
-async function downloadPdfWithoutSelectedPages() {
-  if (!state.arrayBuffer || !state.pageCount) return;
-  if (state.selectedPages.size === 0) {
-    showStatus('삭제할 페이지를 먼저 선택하세요.', true);
+async function downloadEditedFile() {
+  if (!state.arrayBuffer || !state.items.length) return;
+
+  const keepItems = state.items.filter((item) => !state.selectedItems.has(item.originalIndex));
+  const hasInstantDeletion = state.originalItemCount > state.items.length;
+  if (state.selectedItems.size === 0 && !hasInstantDeletion) {
+    showStatus(`삭제할 ${unitName()}을 먼저 선택하거나 각 항목의 휴지통 버튼으로 바로 삭제하세요.`, true);
     return;
   }
-  if (state.selectedPages.size >= state.pageCount) {
-    showStatus('모든 페이지를 삭제할 수는 없습니다. 최소 1페이지는 남겨야 합니다.', true);
+  if (keepItems.length === 0) {
+    showStatus(`모든 ${unitName()}을 삭제할 수는 없습니다. 최소 1개는 남겨야 합니다.`, true);
     return;
   }
 
-  setBusy(true, '선택한 페이지를 제외한 새 PDF를 만드는 중입니다...');
+  setBusy(true, `선택한 ${unitName()}을 제외한 새 ${kindLabel()}를 만드는 중입니다...`);
   try {
-    const sourcePdf = await PDFLib.PDFDocument.load(state.arrayBuffer.slice(0));
-    const outputPdf = await PDFLib.PDFDocument.create();
-    const keepIndexes = [];
-
-    for (let index = 0; index < state.pageCount; index += 1) {
-      const pageNumber = index + 1;
-      if (!state.selectedPages.has(pageNumber)) keepIndexes.push(index);
+    if (state.fileKind === 'pdf') {
+      await downloadEditedPdf(keepItems);
+    } else {
+      await downloadEditedPptx(keepItems);
     }
-
-    const copiedPages = await outputPdf.copyPages(sourcePdf, keepIndexes);
-    copiedPages.forEach((page) => outputPdf.addPage(page));
-    const pdfBytes = await outputPdf.save();
-    downloadBlob(new Blob([pdfBytes], { type: 'application/pdf' }), `${baseFileName()}_deleted-pages.pdf`);
-    showStatus('새 PDF 다운로드가 시작되었습니다.');
+    state.selectedItems.clear();
+    syncAllCheckboxes();
+    showStatus(`새 ${kindLabel()} 다운로드가 시작되었습니다.`);
   } catch (error) {
     console.error(error);
-    showStatus('새 PDF를 만드는 중 오류가 발생했습니다.', true);
+    showStatus(`새 ${kindLabel()}를 만드는 중 오류가 발생했습니다.`, true);
   } finally {
     setBusy(false);
   }
 }
 
+async function downloadEditedPdf(keepItems) {
+  const sourcePdf = await PDFLib.PDFDocument.load(state.arrayBuffer.slice(0));
+  const outputPdf = await PDFLib.PDFDocument.create();
+  const keepIndexes = keepItems.map((item) => item.originalIndex - 1);
+  const copiedPages = await outputPdf.copyPages(sourcePdf, keepIndexes);
+  copiedPages.forEach((page) => outputPdf.addPage(page));
+  const pdfBytes = await outputPdf.save();
+  downloadBlob(new Blob([pdfBytes], { type: 'application/pdf' }), `${baseFileName()}_edited.pdf`);
+}
+
+async function downloadEditedPptx(keepItems) {
+  const keepOriginalIndexes = keepItems.map((item) => item.originalIndex);
+  const pptxBlob = await buildPptxBlob(keepOriginalIndexes);
+  downloadBlob(pptxBlob, `${baseFileName()}_edited.pptx`);
+}
+
 async function downloadSplitZip() {
-  if (!state.arrayBuffer || !state.pageCount) return;
+  if (!state.arrayBuffer || !state.items.length) return;
   const splitSize = Number.parseInt(el.splitSizeInput.value, 10);
 
   if (!Number.isInteger(splitSize) || splitSize < 1) {
-    showStatus('분할할 페이지 개수는 1 이상의 정수여야 합니다.', true);
+    showStatus(`분할할 ${unitName()} 개수는 1 이상의 정수여야 합니다.`, true);
     return;
   }
-  if (splitSize > state.pageCount) {
-    showStatus(`분할할 페이지 개수는 전체 페이지 수(${state.pageCount})보다 클 수 없습니다.`, true);
+  if (splitSize > state.items.length) {
+    showStatus(`분할할 ${unitName()} 개수는 현재 ${unitName()} 수(${state.items.length})보다 클 수 없습니다.`, true);
     return;
   }
 
-  setBusy(true, 'PDF를 분할하고 ZIP으로 압축하는 중입니다...');
+  setBusy(true, `${kindLabel()}를 분할하고 ZIP으로 압축하는 중입니다...`);
   try {
-    const sourcePdf = await PDFLib.PDFDocument.load(state.arrayBuffer.slice(0));
-    const zip = new JSZip();
-    const totalChunks = Math.ceil(state.pageCount / splitSize);
-
-    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
-      const startIndex = chunkIndex * splitSize;
-      const endIndexExclusive = Math.min(startIndex + splitSize, state.pageCount);
-      const pageIndexes = range(startIndex, endIndexExclusive);
-      const outputPdf = await PDFLib.PDFDocument.create();
-      const copiedPages = await outputPdf.copyPages(sourcePdf, pageIndexes);
-      copiedPages.forEach((page) => outputPdf.addPage(page));
-      const pdfBytes = await outputPdf.save();
-      const startPage = startIndex + 1;
-      const endPage = endIndexExclusive;
-      zip.file(`${baseFileName()}_p${pad(startPage)}-${pad(endPage)}.pdf`, pdfBytes);
-      showStatus(`분할 PDF 생성 중... ${chunkIndex + 1}/${totalChunks}`);
-      await new Promise((resolve) => setTimeout(resolve, 0));
+    if (state.fileKind === 'pdf') {
+      await downloadSplitPdfZip(splitSize);
+    } else {
+      await downloadSplitPptxZip(splitSize);
     }
-
-    const zipBlob = await zip.generateAsync(
-      { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } },
-      (metadata) => showStatus(`ZIP 압축 중... ${metadata.percent.toFixed(0)}%`),
-    );
-    downloadBlob(zipBlob, `${baseFileName()}_split-${splitSize}-pages.zip`);
     showStatus('분할 ZIP 다운로드가 시작되었습니다.');
   } catch (error) {
     console.error(error);
@@ -321,9 +445,237 @@ async function downloadSplitZip() {
   }
 }
 
+async function downloadSplitPdfZip(splitSize) {
+  const sourcePdf = await PDFLib.PDFDocument.load(state.arrayBuffer.slice(0));
+  const zip = new JSZip();
+  const totalChunks = Math.ceil(state.items.length / splitSize);
+
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+    const chunkItems = state.items.slice(chunkIndex * splitSize, Math.min((chunkIndex + 1) * splitSize, state.items.length));
+    const pageIndexes = chunkItems.map((item) => item.originalIndex - 1);
+    const outputPdf = await PDFLib.PDFDocument.create();
+    const copiedPages = await outputPdf.copyPages(sourcePdf, pageIndexes);
+    copiedPages.forEach((page) => outputPdf.addPage(page));
+    const pdfBytes = await outputPdf.save();
+    const startPage = chunkIndex * splitSize + 1;
+    const endPage = startPage + chunkItems.length - 1;
+    zip.file(`${baseFileName()}_p${pad(startPage)}-${pad(endPage)}.pdf`, pdfBytes);
+    showStatus(`분할 PDF 생성 중... ${chunkIndex + 1}/${totalChunks}`);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  const zipBlob = await generateZipBlob(zip);
+  downloadBlob(zipBlob, `${baseFileName()}_split-${splitSize}-${unitFileName()}.zip`);
+}
+
+async function downloadSplitPptxZip(splitSize) {
+  const zip = new JSZip();
+  const totalChunks = Math.ceil(state.items.length / splitSize);
+
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+    const chunkItems = state.items.slice(chunkIndex * splitSize, Math.min((chunkIndex + 1) * splitSize, state.items.length));
+    const keepOriginalIndexes = chunkItems.map((item) => item.originalIndex);
+    const pptxBlob = await buildPptxBlob(keepOriginalIndexes);
+    const startSlide = chunkIndex * splitSize + 1;
+    const endSlide = startSlide + chunkItems.length - 1;
+    zip.file(`${baseFileName()}_s${pad(startSlide)}-${pad(endSlide)}.pptx`, pptxBlob);
+    showStatus(`분할 PPTX 생성 중... ${chunkIndex + 1}/${totalChunks}`);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  const zipBlob = await generateZipBlob(zip);
+  downloadBlob(zipBlob, `${baseFileName()}_split-${splitSize}-${unitFileName()}.zip`);
+}
+
+async function generateZipBlob(zip) {
+  return zip.generateAsync(
+    { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } },
+    (metadata) => showStatus(`ZIP 압축 중... ${metadata.percent.toFixed(0)}%`),
+  );
+}
+
+async function readPptxModel(zip) {
+  const presentationPath = 'ppt/presentation.xml';
+  const relsPath = 'ppt/_rels/presentation.xml.rels';
+  const presentationXml = await readZipText(zip, presentationPath);
+  const relsXml = await readZipText(zip, relsPath);
+  const presentationDoc = parseXml(presentationXml);
+  const relsDoc = parseXml(relsXml);
+  const relMap = getRelationshipMap(relsDoc, presentationPath);
+  const slideIdNodes = getElementsByLocalName(presentationDoc, 'sldId');
+
+  const slides = [];
+  for (const slideIdNode of slideIdNodes) {
+    const relId = getRelationshipId(slideIdNode);
+    const slidePath = relMap.get(relId);
+    if (!slidePath) continue;
+
+    const slideXml = await readZipText(zip, slidePath).catch(() => '');
+    slides.push({
+      relId,
+      slidePath,
+      text: extractSlideText(slideXml),
+    });
+  }
+
+  return { slides };
+}
+
+async function buildPptxBlob(keepOriginalIndexes) {
+  const keepSet = new Set(keepOriginalIndexes);
+  const zip = await JSZip.loadAsync(state.arrayBuffer.slice(0));
+  const presentationPath = 'ppt/presentation.xml';
+  const relsPath = 'ppt/_rels/presentation.xml.rels';
+  const presentationXml = await readZipText(zip, presentationPath);
+  const relsXml = await readZipText(zip, relsPath);
+  const presentationDoc = parseXml(presentationXml);
+  const relsDoc = parseXml(relsXml);
+  const slideIdNodes = getElementsByLocalName(presentationDoc, 'sldId');
+  const removedRelIds = new Set();
+
+  slideIdNodes.forEach((node, index) => {
+    const originalIndex = index + 1;
+    if (!keepSet.has(originalIndex)) {
+      const relId = getRelationshipId(node);
+      if (relId) removedRelIds.add(relId);
+      node.parentNode?.removeChild(node);
+    }
+  });
+
+  getElementsByLocalName(relsDoc, 'Relationship').forEach((node) => {
+    if (removedRelIds.has(node.getAttribute('Id'))) {
+      node.parentNode?.removeChild(node);
+    }
+  });
+
+  zip.file(presentationPath, serializeXml(presentationDoc));
+  zip.file(relsPath, serializeXml(relsDoc));
+  await updatePptxSlideCount(zip, keepSet.size);
+
+  return zip.generateAsync({
+    type: 'blob',
+    mimeType: PPTX_MIME,
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 },
+  });
+}
+
+async function updatePptxSlideCount(zip, slideCount) {
+  const appPath = 'docProps/app.xml';
+  const appFile = zip.file(appPath);
+  if (!appFile) return;
+
+  const appXml = await appFile.async('string');
+  const appDoc = parseXml(appXml);
+  const slidesNode = getElementsByLocalName(appDoc, 'Slides')[0];
+  if (!slidesNode) return;
+
+  slidesNode.textContent = String(slideCount);
+  zip.file(appPath, serializeXml(appDoc));
+}
+
+async function readZipText(zip, path) {
+  const file = zip.file(path);
+  if (!file) throw new Error(`${path} 파일을 찾지 못했습니다.`);
+  return file.async('string');
+}
+
+function parseXml(xmlText) {
+  const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
+  const errorNode = doc.querySelector('parsererror');
+  if (errorNode) throw new Error('XML 파싱에 실패했습니다.');
+  return doc;
+}
+
+function serializeXml(doc) {
+  return new XMLSerializer().serializeToString(doc);
+}
+
+function getRelationshipMap(relsDoc, basePath) {
+  const relationships = getElementsByLocalName(relsDoc, 'Relationship');
+  const relMap = new Map();
+
+  relationships.forEach((relationship) => {
+    const id = relationship.getAttribute('Id');
+    const target = relationship.getAttribute('Target');
+    if (!id || !target) return;
+    relMap.set(id, resolveZipPath(basePath, target));
+  });
+
+  return relMap;
+}
+
+function getRelationshipId(node) {
+  return node.getAttributeNS(REL_NS, 'id') || node.getAttribute('r:id');
+}
+
+function getElementsByLocalName(root, localName) {
+  return Array.from(root.getElementsByTagName('*')).filter((node) => node.localName === localName);
+}
+
+function resolveZipPath(basePath, target) {
+  if (target.startsWith('/')) return normalizeZipPath(target.slice(1));
+  const baseDir = basePath.split('/').slice(0, -1).join('/');
+  return normalizeZipPath(`${baseDir}/${target}`);
+}
+
+function normalizeZipPath(path) {
+  const parts = [];
+  path.split('/').forEach((part) => {
+    if (!part || part === '.') return;
+    if (part === '..') {
+      parts.pop();
+      return;
+    }
+    parts.push(part);
+  });
+  return parts.join('/');
+}
+
+function extractSlideText(slideXml) {
+  if (!slideXml) return '';
+
+  try {
+    const slideDoc = parseXml(slideXml);
+    const texts = getElementsByLocalName(slideDoc, 't')
+      .map((node) => node.textContent.trim())
+      .filter(Boolean);
+    return compactText(texts.join(' '), 180);
+  } catch (error) {
+    console.warn(error);
+    return '';
+  }
+}
+
+function compactText(text, maxLength) {
+  const compacted = text.replace(/\s+/g, ' ').trim();
+  if (compacted.length <= maxLength) return compacted;
+  return `${compacted.slice(0, maxLength - 1)}…`;
+}
+
+function detectFileKind(file) {
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.pdf')) return 'pdf';
+  if (name.endsWith('.pptx')) return 'pptx';
+  if (name.endsWith('.ppt')) return 'ppt';
+  if (file.type === 'application/pdf') return 'pdf';
+  if (file.type === PPTX_MIME) return 'pptx';
+  return null;
+}
+
+function setFileIcon(fileKind) {
+  if (fileKind === 'pptx') {
+    el.fileDropIcon.textContent = 'PPTX';
+    el.fileDropIcon.classList.add('pptx');
+  } else {
+    el.fileDropIcon.textContent = 'PDF';
+    el.fileDropIcon.classList.remove('pptx');
+  }
+}
+
 function setBusy(isBusy, message = '') {
-  enableControls(!isBusy && Boolean(state.pageCount));
-  el.pdfInput.disabled = isBusy;
+  enableControls(!isBusy && Boolean(state.items.length));
+  el.fileInput.disabled = isBusy;
   if (message) showStatus(message);
 }
 
@@ -349,17 +701,28 @@ function downloadBlob(blob, filename) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function range(startInclusive, endExclusive) {
-  return Array.from({ length: endExclusive - startInclusive }, (_, index) => startInclusive + index);
-}
-
 function baseFileName() {
-  const name = state.file?.name || 'document.pdf';
-  return name.replace(/\.pdf$/i, '').replace(/[\\/:*?"<>|]+/g, '_');
+  const name = state.file?.name || 'document';
+  return name.replace(/\.(pdf|pptx|ppt)$/i, '').replace(/[\\/:*?"<>|]+/g, '_');
 }
 
 function pad(number) {
-  return String(number).padStart(String(state.pageCount).length, '0');
+  return String(number).padStart(String(Math.max(1, state.items.length)).length, '0');
+}
+
+function kindLabel() {
+  if (state.fileKind === 'pptx') return 'PPTX';
+  return 'PDF';
+}
+
+function unitName() {
+  if (state.fileKind === 'pptx') return '슬라이드';
+  return '페이지';
+}
+
+function unitFileName() {
+  if (state.fileKind === 'pptx') return 'slides';
+  return 'pages';
 }
 
 function formatBytes(bytes) {
